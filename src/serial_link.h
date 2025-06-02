@@ -11,6 +11,7 @@
 #include <sys/ioctl.h>
 #include <fcntl.h>
 #include <stdbool.h>
+#include <string.h>
 
 // --------------------------------------------------------------------------------------------------------------------
 // Define the orders that can be sent and received
@@ -31,6 +32,7 @@ struct SerialLink
     speed_t m_baudrate;
     int fd;
     bool is_connected;
+    char port[64];
 };
 typedef struct SerialLink link_t;
 struct Sample
@@ -77,9 +79,8 @@ int SerialLink_configure(link_t *pLink)
     return 0;
 }
 // --------------------------------------------------------------------------------------------------------------------
-void SerialLink_initialize(link_t *pLink, const char *_port, const speed_t _baudrate)
+void SerialLink_open_link(link_t *pLink, const char *_port, const speed_t _baudrate)
 {
-    pLink->is_connected = false;
     pLink->fd = open(_port, O_RDWR | O_NOCTTY);
     if (pLink->fd == -1)
     {
@@ -92,6 +93,13 @@ void SerialLink_initialize(link_t *pLink, const char *_port, const speed_t _baud
     }
 }
 // --------------------------------------------------------------------------------------------------------------------
+void SerialLink_initialize(link_t *pLink, const char *_port, const speed_t _baudrate)
+{
+    pLink->is_connected = false;
+    strcpy(pLink->port, _port);
+    SerialLink_open_link(pLink, pLink->port, pLink->m_baudrate);
+}
+// --------------------------------------------------------------------------------------------------------------------
 void SerialLink_uninitialize(link_t *pLink)
 {
     pLink->is_connected = false;
@@ -101,16 +109,22 @@ void SerialLink_uninitialize(link_t *pLink)
     }
 }
 // --------------------------------------------------------------------------------------------------------------------
-int SerialLink_is_data_available(link_t *pLink)
+bool SerialLink_is_data_available(link_t *pLink)
 {
     int bytesAvailable;
-    ioctl(pLink->fd, FIONREAD, &bytesAvailable);
-    return bytesAvailable;
+    if (ioctl(pLink->fd, FIONREAD, &bytesAvailable) == -1)
+    {
+        SerialLink_open_link(pLink, pLink->port, pLink->m_baudrate);
+        return false;
+    }
+    else
+        return bytesAvailable > 0;
 }
 // --------------------------------------------------------------------------------------------------------------------
 void SerialLink_write_object(link_t *pLink, const void *_object, const size_t _size)
 {
-    write(pLink->fd, _object, _size);
+    if (write(pLink->fd, _object, _size) == -1)
+        SerialLink_open_link(pLink, pLink->port, pLink->m_baudrate);
 }
 // --------------------------------------------------------------------------------------------------------------------
 void SerialLink_write_uint8(link_t *pLink, const uint8_t _value)
@@ -125,8 +139,8 @@ void SerialLink_write_order(link_t *pLink, const order_t _order)
 // --------------------------------------------------------------------------------------------------------------------
 void SerialLink_read_object(link_t *pLink, void *_object, const size_t _size)
 {
-    int ret = read(pLink->fd, _object, _size);
-    printf("read : %d \n", ret);
+    if (read(pLink->fd, _object, _size) == -1)
+        SerialLink_open_link(pLink, pLink->port, pLink->m_baudrate);
 }
 // --------------------------------------------------------------------------------------------------------------------
 uint8_t SerialLink_read_uint8(link_t *pLink)
@@ -151,7 +165,7 @@ sample_t SerialLink_read_sample(link_t *pLink)
 // --------------------------------------------------------------------------------------------------------------------
 void SerialLink_read_and_respond(link_t *pLink)
 {
-    if (SerialLink_is_data_available(pLink) > 0)
+    if (SerialLink_is_data_available(pLink))
     {
         order_t order = SerialLink_read_order(pLink);
         if (order == ORDER_HELLO)
@@ -175,15 +189,13 @@ void SerialLink_read_and_respond(link_t *pLink)
 // --------------------------------------------------------------------------------------------------------------------
 void SerialLink_wait_for_connection(link_t *pLink)
 {
-    int available_bytes = 0;
     order_t order;
+    SerialLink_write_order(pLink, ORDER_HELLO);
     while (!pLink->is_connected)
     {
-        SerialLink_write_order(pLink, ORDER_HELLO);
         printf("Waiting for connection...\n");
         sleep(1);
-        available_bytes = SerialLink_is_data_available(pLink);
-        if (available_bytes > 0)
+        if (SerialLink_is_data_available(pLink))
         {
             order = SerialLink_read_order(pLink);
             if ((order == ORDER_HELLO) || (order == ORDER_ALREADY_CONNECTED))
